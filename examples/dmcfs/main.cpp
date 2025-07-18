@@ -1,7 +1,7 @@
 #include "dmcfs.h" // 包含新的头文件
 #include <iostream>
 #include <iomanip>
-
+#include "dmfix_win_utf8.h"
 void PrintSeparator() {
     std::cout << "---------------------------------------------------------" << std::endl;
 }
