@@ -35,27 +35,17 @@ class Idmcfs {
 public:
     virtual ~Idmcfs() {}
     virtual void DMAPI Release(void) = 0;
-
-    /**
-     * @brief 向调度器添加一个任务。调度器不拥有该任务指针的所有权。
-     * @param task 指向实现了 Idmcfs_task 接口的对象的指针。
-     */
     virtual void DMAPI addTask(Idmcfs_task* task) = 0;
-    
-    /**
-     * @brief 移除一个任务。
-     * @param task_id 要移除的任务的ID。
-     */
     virtual void DMAPI removeTask(uint32_t task_id) = 0;
 
     /**
      * @brief 执行一个调度周期。
-     * 它会选择vruntime最小的任务，调用其run()方法，
-     * 然后根据给定的执行时间更新该任务的vruntime。
-     * @param exec_slice_ms 分配给选定任务的执行时间（毫秒）。
+     * 它会选择vruntime最小的任务，并根据其自适应状态决定工作量，
+     * 调用其run()方法，然后根据返回值更新其内部状态和vruntime。
+     * @param base_slice_ms 分配给选定任务的基础时间（用于计算vruntime）
      * @return 返回被执行的任务的ID，如果没有任务可执行则返回0。
      */
-    virtual uint32_t DMAPI dispatch(uint64_t exec_slice_ms) = 0;
+    virtual uint32_t DMAPI dispatch(uint64_t base_slice_ms) = 0;
 };
 
 // 工厂函数返回的是接口指针 Idmcfs*

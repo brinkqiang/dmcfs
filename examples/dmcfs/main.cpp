@@ -5,156 +5,144 @@
 #include <memory>
 #include <string>
 #include <random>
+#include <iomanip>
+#include <algorithm>
 #include "dmfix_win_utf8.h"
-// --- 游戏相关的具体任务实现 ---
+// --- ANSI 颜色代码 ---
+#define RESET   "\033[0m"
+#define BOLD_CYAN    "\033[1;36m"
 
-// 1. 玩家输入处理任务 (最高优先级)
+// 1. 玩家输入处理任务
 class PlayerInputTask : public Idmcfs_task {
 public:
     PlayerInputTask(uint32_t id) : m_id(id) {}
     uint32_t getId() const override { return m_id; }
-    const char* getName() const override { return "PlayerInput"; }
-    int getNiceValue() const override { return -20; } // 最高优先级
-    DmcfsSchedulingState& getSchedulingState() override { return m_state; }
+    const char* getName() const override { return "玩家输入"; }
+    int getNiceValue() const override { return -20; }
+    DmcfsSchedulingState& getSchedulingState() override { return m_sched_state; }
+    DmcfsTuningState& getTuningState() override { return m_tuning_state; }
 
-    void run() override {
-        std::cout << "  └─ [Input] Polling keyboard and mouse state..." << std::endl;
+    uint32_t run(uint32_t requested_count) override {
+        std::cout << "  > [执行] " << getName() << ": 正在轮询键鼠... (建议量: " << requested_count << ", 实际: 1)";
+        return 1;
     }
 private:
     uint32_t m_id;
-    DmcfsSchedulingState m_state;
+    DmcfsSchedulingState m_sched_state;
+    DmcfsTuningState m_tuning_state;
 };
 
-// 2. 物理引擎任务 (高优先级)
+// 2. 物理引擎任务
 class PhysicsEngineTask : public Idmcfs_task {
 public:
-    PhysicsEngineTask(uint32_t id) : m_id(id), m_step_count(0) {}
+    PhysicsEngineTask(uint32_t id, uint32_t particle_count) : m_id(id), m_total_particles(particle_count) {}
     uint32_t getId() const override { return m_id; }
-    const char* getName() const override { return "PhysicsEngine"; }
-    int getNiceValue() const override { return -15; } // 高优先级
-    DmcfsSchedulingState& getSchedulingState() override { return m_state; }
+    const char* getName() const override { return "物理引擎"; }
+    int getNiceValue() const override { return -10; } // 降低一点优先级，使其不总是抢在输入前面
+    DmcfsSchedulingState& getSchedulingState() override { return m_sched_state; }
+    DmcfsTuningState& getTuningState() override { return m_tuning_state; }
 
-    void run() override {
-        m_step_count++;
-        std::cout << "  └─ [Physics] Simulating step #" << m_step_count << ". Updating transforms and detecting collisions." << std::endl;
+    uint32_t run(uint32_t requested_count) override {
+        uint32_t particles_to_process = std::min(requested_count, m_total_particles);
+        std::cout << "  > [执行] " << getName() << ": 正在模拟 " << particles_to_process << " 个粒子... (建议量: " << requested_count << ")";
+        return particles_to_process;
     }
 private:
     uint32_t m_id;
-    uint64_t m_step_count;
-    DmcfsSchedulingState m_state;
+    uint32_t m_total_particles;
+    DmcfsSchedulingState m_sched_state;
+    DmcfsTuningState m_tuning_state;
 };
 
-// 3. AI行为任务 (中等优先级)
-class AiBehaviorTask : public Idmcfs_task {
-public:
-    enum class State { IDLE, PATROLLING, ATTACKING };
-    AiBehaviorTask(uint32_t id, std::string name) : m_id(id), m_name(std::move(name)), m_current_state(State::IDLE) {}
-    uint32_t getId() const override { return m_id; }
-    const char* getName() const override { return m_name.c_str(); }
-    int getNiceValue() const override { return 5; } // 中等优先级
-    DmcfsSchedulingState& getSchedulingState() override { return m_state; }
-
-    void run() override {
-        // 模拟简单的状态切换
-        int random_event = std::rand() % 10;
-        if (random_event > 8) m_current_state = State::ATTACKING;
-        else if (random_event > 5) m_current_state = State::PATROLLING;
-        else m_current_state = State::IDLE;
-
-        std::cout << "  └─ [AI:" << m_name << "] Current state: ";
-        switch (m_current_state) {
-        case State::IDLE: std::cout << "Idling." << std::endl; break;
-        case State::PATROLLING: std::cout << "Patrolling area." << std::endl; break;
-        case State::ATTACKING: std::cout << "Attacking player!" << std::endl; break;
-        }
-    }
-private:
-    uint32_t m_id;
-    std::string m_name;
-    State m_current_state;
-    DmcfsSchedulingState m_state;
-};
-
-
-// 4. 资源流式加载任务 (最低优先级)
+// 3. 资源流式加载任务
 class AssetStreamingTask : public Idmcfs_task {
 public:
-    AssetStreamingTask(uint32_t id, std::string asset_name)
-        : m_id(id), m_asset_name(std::move(asset_name)), m_progress(0), m_total_size(100) {
+    AssetStreamingTask(uint32_t id, std::string asset_name, uint32_t total_kb)
+        : m_id(id), m_asset_name(std::move(asset_name)), m_kb_loaded(0), m_total_kb(total_kb) {
     }
-
     uint32_t getId() const override { return m_id; }
-    const char* getName() const override { return "AssetStreamer"; }
-    int getNiceValue() const override { return 15; } // 最低优先级
-    DmcfsSchedulingState& getSchedulingState() override { return m_state; }
-    bool isDone() const { return m_progress >= m_total_size; }
+    const char* getName() const override { return "资源加载器"; }
+    int getNiceValue() const override { return 15; }
+    DmcfsSchedulingState& getSchedulingState() override { return m_sched_state; }
+    DmcfsTuningState& getTuningState() override { return m_tuning_state; }
+    bool isDone() const { return m_kb_loaded >= m_total_kb; }
 
-    void run() override {
-        if (isDone()) return;
-        m_progress += 25; // 模拟每次加载25%
-        std::cout << "  └─ [Assets] Loading '" << m_asset_name << "'... " << m_progress << "%" << std::endl;
+    uint32_t run(uint32_t requested_count) override {
+        if (isDone()) return 0;
+        uint32_t kb_to_read = std::min(requested_count, (uint32_t)10);
+        kb_to_read = std::min(kb_to_read, m_total_kb - m_kb_loaded);
+        m_kb_loaded += kb_to_read;
+        std::cout << "  > [执行] " << getName() << ": 加载 '" << m_asset_name << "'... " << m_kb_loaded << "/" << m_total_kb
+            << " KB. (建议量: " << requested_count << ", 实际: " << kb_to_read << ")";
+        return kb_to_read;
     }
 private:
     uint32_t m_id;
     std::string m_asset_name;
-    int m_progress;
-    int m_total_size;
-    DmcfsSchedulingState m_state;
+    uint32_t m_kb_loaded;
+    uint32_t m_total_kb;
+    DmcfsSchedulingState m_sched_state;
+    DmcfsTuningState m_tuning_state;
 };
 
 
 // --- 主游戏循环 ---
+void printTaskState(Idmcfs_task* task, uint64_t vruntime_scale) {
+    auto& tuning_state = task->getTuningState();
+    auto& sched_state = task->getSchedulingState();
+    double readable_vruntime = (double)sched_state.vruntime / vruntime_scale;
+
+    std::cout << "    > 任务: " << std::left << std::setw(12) << task->getName()
+        << " | 建议工作量: " << std::setw(5) << tuning_state.recommended_count
+        << " | 平均完成率: " << std::fixed << std::setprecision(2) << (double)tuning_state.avg_completion_ratio_scaled / 10000.0
+        << " | vruntime: " << readable_vruntime
+        << std::endl;
+}
+
 int main(int argc, char* argv[]) {
-    std::srand(static_cast<unsigned int>(std::time(nullptr)));
-
     dmcfsPtr scheduler(dmcfsGetModule());
-    if (!scheduler) {
-        std::cerr << "Error: Failed to get dmcfs module." << std::endl;
-        return 1;
-    }
+    if (!scheduler) { return 1; }
 
-    // 创建常驻的核心游戏任务
+    // 为了演示效果，把所有任务都预先创建好
     auto player_input = std::make_unique<PlayerInputTask>(101);
-    auto physics_engine = std::make_unique<PhysicsEngineTask>(201);
-    auto orc_ai = std::make_unique<AiBehaviorTask>(301, "Orc Grunt");
-    auto dragon_ai = std::make_unique<AiBehaviorTask>(302, "Ancient Dragon");
+    auto physics_engine = std::make_unique<PhysicsEngineTask>(201, 5000);
+    auto asset_task = std::make_unique<AssetStreamingTask>(901, "地牢贴图.pak", 85);
 
-    scheduler->addTask(player_input.get());
-    scheduler->addTask(physics_engine.get());
-    scheduler->addTask(orc_ai.get());
-    scheduler->addTask(dragon_ai.get());
+    std::vector<Idmcfs_task*> all_tasks;
+    all_tasks.push_back(player_input.get());
+    all_tasks.push_back(physics_engine.get());
+    all_tasks.push_back(asset_task.get());
 
-    std::unique_ptr<AssetStreamingTask> asset_task = nullptr;
+    for (const auto& task : all_tasks) {
+        scheduler->addTask(task);
+    }
 
-    const int TOTAL_FRAMES = 15;
-    const int DISPATCHES_PER_FRAME = 5; // 在一帧的时间内，调度器可以切换5次任务
+    const int TOTAL_FRAMES = 30;
+    const int DISPATCHES_PER_FRAME = 4;
 
-    // 模拟游戏主循环
-    std::cout << "\n==================== GAME START ====================\n";
+    std::cout << "\n" << BOLD_CYAN << "==================== 游戏开始 (修正版) ====================" << RESET << "\n";
     for (int frame = 1; frame <= TOTAL_FRAMES; ++frame) {
-        std::cout << "\n--- Frame #" << frame << " ---" << std::endl;
+        std::cout << "\n" << BOLD_CYAN << "--- 游戏帧 #" << frame << " ---" << RESET << std::endl;
 
-        // 模拟事件：在第3帧，玩家进入新区域，需要加载资源
-        if (frame == 3 && !asset_task) {
-            std::cout << "Engine: Player entered 'Dark Forest'. Triggering asset streaming..." << std::endl;
-            asset_task = std::make_unique<AssetStreamingTask>(901, "dark_forest.pak");
-            scheduler->addTask(asset_task.get());
-        }
-
-        // 在一帧的时间内，让CFS调度多个任务
         for (int d = 0; d < DISPATCHES_PER_FRAME; ++d) {
-            // 每次调度，分配2ms的执行时间片
-            scheduler->dispatch(2);
+            uint32_t dispatched_id = scheduler->dispatch(2); // 基础时间片为2ms
+            if (dispatched_id == 0) break;
         }
 
-        // 检查后台任务是否完成
         if (asset_task && asset_task->isDone()) {
-            std::cout << "Engine: Asset 'dark_forest.pak' finished loading." << std::endl;
+            std::cout << "引擎: 资源 '地牢贴图.pak' 加载完毕，从调度器移除。" << std::endl;
             scheduler->removeTask(asset_task->getId());
-            asset_task.reset(); // 销毁任务对象
+            // 将其从我们的报告列表中移除
+            all_tasks.erase(std::remove(all_tasks.begin(), all_tasks.end(), asset_task.get()), all_tasks.end());
+            asset_task.reset();
         }
     }
-    std::cout << "\n==================== GAME END ====================\n";
+    std::cout << "\n" << BOLD_CYAN << "==================== 游戏结束 ====================" << RESET << "\n";
+
+    std::cout << "\n--- 最终自适应状态报告 ---" << std::endl;
+    for (const auto& task : all_tasks) {
+        printTaskState(task, 1024); // 使用在impl中定义的scale
+    }
 
     return 0;
 }

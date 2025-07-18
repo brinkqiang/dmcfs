@@ -18,12 +18,29 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-
 #include "libdmcfs_impl.h"
 #include "dmcfs_task.h"
 #include <iostream>
 #include <algorithm>
 #include <utility>
+#include <iomanip>
+
+// --- ANSI 颜色代码 ---
+#define RESET   "\033[0m"
+#define BOLD_CYAN    "\033[1;36m"
+#define MAGENTA "\033[0;35m"
+#define GREEN   "\033[0;32m"
+#define YELLOW  "\033[0;33m"
+
+// --- 定点数运算常量 ---
+const uint32_t RATIO_BASE = 10000;
+const uint32_t EMA_ALPHA_SCALED = 1000;
+const uint32_t CPU_BOUND_GROWTH_RATE_SCALED = 10200;
+const uint32_t IO_BOUND_RATIO_THRESHOLD_SCALED = 9500;
+const uint32_t MINIMUM_RECOMMENDED_COUNT = 10;
+// vruntime 缩放因子，解决整数除法精度问题
+const uint64_t VRUNTIME_SCALE = 1024;
+
 
 DmcfsImpl::DmcfsImpl() : m_min_vruntime(0) {}
 
@@ -34,7 +51,6 @@ void DmcfsImpl::Release(void) {
 }
 
 uint32_t DmcfsImpl::get_weight(int nice_value) {
-    // 将 nice 值从 [-20, 19] 映射到数组索引 [0, 39]
     int index = std::clamp(nice_value + 20, 0, 39);
     return sched_prio_to_weight[index];
 }
@@ -43,22 +59,18 @@ void DmcfsImpl::addTask(Idmcfs_task* task) {
     if (!task || m_task_lookup.count(task->getId())) {
         return;
     }
-
     int nice_value = task->getNiceValue();
     uint32_t weight = get_weight(nice_value);
 
-    DmcfsSchedulingState& state = task->getSchedulingState();
-    state.weight = weight;
-    state.vruntime = m_min_vruntime; // 新任务设置为当前最小vruntime
+    DmcfsSchedulingState& sched_state = task->getSchedulingState();
+    sched_state.weight = weight;
+    sched_state.vruntime = m_min_vruntime;
 
     uint32_t task_id = task->getId();
-    VRuntimeKey key = {state.vruntime, task_id};
+    VRuntimeKey key = {sched_state.vruntime, task_id};
 
     m_run_queue[key] = task;
     m_task_lookup[task_id] = task;
-
-    std::cout << "Scheduler: Task '" << task->getName() << "' (ID: " << task_id
-        << ", nice: " << nice_value << ") added." << std::endl;
 }
 
 void DmcfsImpl::removeTask(uint32_t task_id) {
@@ -66,54 +78,76 @@ void DmcfsImpl::removeTask(uint32_t task_id) {
     if (it_lookup != m_task_lookup.end()) {
         Idmcfs_task* task = it_lookup->second;
         DmcfsSchedulingState& state = task->getSchedulingState();
-
         VRuntimeKey key = {state.vruntime, task->getId()};
-
         m_run_queue.erase(key);
         m_task_lookup.erase(it_lookup);
-
-        std::cout << "Scheduler: Task '" << task->getName() << "' (ID: " << task_id << ") removed." << std::endl;
-
         if (!m_run_queue.empty()) {
             m_min_vruntime = m_run_queue.begin()->second->getSchedulingState().vruntime;
         }
     }
 }
 
-uint32_t DmcfsImpl::dispatch(uint64_t exec_slice_ms) {
+uint32_t DmcfsImpl::dispatch(uint64_t base_slice_ms) {
     if (m_run_queue.empty()) {
-        return 0; // 返回0表示没有任务被调度
+        return 0;
     }
 
-    // 1. 选择任务 (Pick)
     auto it = m_run_queue.begin();
     Idmcfs_task* task_to_run = it->second;
-
-    // 从队列中移除旧条目，因为vruntime即将改变
     m_run_queue.erase(it);
 
-    // 2. 执行任务 (Run)
-    std::cout << "\nScheduler: Dispatching task '" << task_to_run->getName()
-        << "' (vruntime: " << task_to_run->getSchedulingState().vruntime << ")." << std::endl;
+    DmcfsSchedulingState& sched_state = task_to_run->getSchedulingState();
+    DmcfsTuningState& tuning_state = task_to_run->getTuningState();
+    uint32_t requested_count = tuning_state.recommended_count;
 
-    task_to_run->run();
+    // 为了日志可读性，将缩放后的vruntime转换为浮点数显示
+    double readable_vruntime = (double)sched_state.vruntime / VRUNTIME_SCALE;
+    std::cout << "调度器: 选择任务 '" << task_to_run->getName() << "' (vruntime: "
+        << std::fixed << std::setprecision(2) << readable_vruntime << ")" << std::endl;
 
-    // 3. 更新状态 (Update)
-    DmcfsSchedulingState& state = task_to_run->getSchedulingState();
-    uint64_t delta_vruntime = (exec_slice_ms * NICE_0_LOAD) / state.weight;
-    state.vruntime += delta_vruntime;
+    std::cout << MAGENTA;
+    uint32_t actual_count = task_to_run->run(requested_count);
+    std::cout << RESET;
 
-    // 4. 重新插入队列
-    VRuntimeKey new_key = {state.vruntime, task_to_run->getId()};
+    uint32_t old_recommended = tuning_state.recommended_count;
+    if (requested_count > 0) {
+        uint64_t current_ratio_scaled = ((uint64_t)actual_count * RATIO_BASE) / requested_count;
+        uint64_t old_avg_scaled = tuning_state.avg_completion_ratio_scaled;
+        uint64_t new_avg_scaled = (((uint64_t)EMA_ALPHA_SCALED * current_ratio_scaled) +
+            ((uint64_t)(RATIO_BASE - EMA_ALPHA_SCALED) * old_avg_scaled)) / RATIO_BASE;
+        tuning_state.avg_completion_ratio_scaled = (uint32_t)new_avg_scaled;
+
+        uint32_t new_recommended = old_recommended;
+        if (tuning_state.avg_completion_ratio_scaled < IO_BOUND_RATIO_THRESHOLD_SCALED && old_recommended > MINIMUM_RECOMMENDED_COUNT) {
+            uint64_t adjusted_count = ((uint64_t)old_recommended * tuning_state.avg_completion_ratio_scaled) / RATIO_BASE;
+            new_recommended = std::max(MINIMUM_RECOMMENDED_COUNT, (uint32_t)adjusted_count);
+            if (new_recommended != old_recommended) {
+                std::cout << YELLOW << "  └─ [调优] 任务 '" << task_to_run->getName() << "' 完成率低, 优化建议量: "
+                    << old_recommended << " -> " << new_recommended << RESET << std::endl;
+            }
+        }
+        else if (tuning_state.avg_completion_ratio_scaled >= IO_BOUND_RATIO_THRESHOLD_SCALED) {
+            uint64_t increased_count = ((uint64_t)old_recommended * CPU_BOUND_GROWTH_RATE_SCALED) / RATIO_BASE;
+            new_recommended = std::max(old_recommended, (uint32_t)increased_count);
+            if (new_recommended != old_recommended) {
+                std::cout << GREEN << "  └─ [调优] 任务 '" << task_to_run->getName() << "' 持续繁忙, 试探性增加建议量: "
+                    << old_recommended << " -> " << new_recommended << RESET << std::endl;
+            }
+        }
+        tuning_state.recommended_count = new_recommended;
+    }
+
+    // FIX: 为vruntime的计算增加缩放因子，避免精度丢失
+    uint64_t delta_vruntime_scaled = (base_slice_ms * NICE_0_LOAD * VRUNTIME_SCALE) / sched_state.weight;
+    sched_state.vruntime += delta_vruntime_scaled;
+
+    VRuntimeKey new_key = {sched_state.vruntime, task_to_run->getId()};
     m_run_queue[new_key] = task_to_run;
-
-    // 更新整个队列的最小 vruntime
     m_min_vruntime = m_run_queue.begin()->second->getSchedulingState().vruntime;
 
     return task_to_run->getId();
 }
 
-// 工厂函数实现
 extern "C" DMEXPORT_DLL Idmcfs* DMAPI dmcfsGetModule() {
     return new DmcfsImpl();
 }
