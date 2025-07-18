@@ -1,5 +1,4 @@
-﻿
-// Copyright (c) 2018 brinkqiang (brink.qiang@gmail.com)
+﻿// Copyright (c) 2018 brinkqiang (brink.qiang@gmail.com)
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -37,9 +36,14 @@ struct DmcfsTuningState {
 
     // 任务工作完成率的指数移动平均值(EMA)
     // 使用 scaled_base (10000) 进行缩放, 10000 代表 1.0
-    uint32_t avg_completion_ratio_scaled = 10000; 
+    uint32_t avg_completion_ratio_scaled = 10000;
 };
 
+// **【修改】新增结构体，用于run方法的返回**
+struct TaskRunResult {
+    uint32_t actual_count = 0; // 实际完成的工作单元数量
+    uint64_t consumed_ms = 0;  // 实际消耗的时间（毫秒）
+};
 
 // 任务接口类
 class Idmcfs_task {
@@ -47,22 +51,22 @@ public:
     virtual ~Idmcfs_task() {}
 
     //--- 任务的固有属性 (由任务实现者提供) ---//
-    
+
     virtual uint32_t getId() const = 0;
     virtual const char* getName() const = 0;
     virtual int getNiceValue() const = 0;
-    
+
     //--- 任务的执行体 (由任务实现者定义核心逻辑) ---//
 
     /**
      * @brief 调度器将调用此方法来执行任务
      * @param requested_count 调度器建议本次最多处理的工作单元数量
-     * @return 任务实际处理的工作单元数量
+     * @return **【修改】**包含实际处理数量和实际消耗时间的结果
      */
-    virtual uint32_t run(uint32_t requested_count) = 0;
+    virtual TaskRunResult run(uint32_t requested_count) = 0;
 
     //--- 状态访问 ---//
-    
+
     virtual DmcfsSchedulingState& getSchedulingState() = 0;
     virtual DmcfsTuningState& getTuningState() = 0;
 };

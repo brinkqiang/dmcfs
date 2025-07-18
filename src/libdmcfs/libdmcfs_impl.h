@@ -1,4 +1,3 @@
-
 // Copyright (c) 2018 brinkqiang (brink.qiang@gmail.com)
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -23,13 +22,12 @@
 #define __LIBDMCFS_IMPL_H_INCLUDE__
 
 #include "dmcfs.h"
-#include "dmcfs_task.h"
 #include <map>
 #include <unordered_map>
 #include <vector>
 
 // 真实Linux内核中的权重表
-static const uint32_t sched_prio_to_weight[40] = {
+static const int sched_prio_to_weight[40] = {
     /* -20 */     88761,     71755,     56483,     45462,     36423,
     /* -15 */     29154,     23254,     18705,     14949,     11916,
     /* -10 */      9548,      7620,      6100,      4904,      3906,
@@ -52,7 +50,7 @@ public:
     virtual void DMAPI Release(void) override;
     virtual void DMAPI addTask(Idmcfs_task* task) override;
     virtual void DMAPI removeTask(uint32_t task_id) override;
-    virtual uint32_t DMAPI dispatch(uint64_t exec_slice_ms) override;
+    virtual uint32_t DMAPI dispatch(uint64_t base_slice_ms) override;
 
 private:
     uint32_t get_weight(int nice_value);
@@ -63,6 +61,9 @@ private:
     std::map<VRuntimeKey, Idmcfs_task*> m_run_queue;
     // 用于通过ID快速查找任务指针
     std::unordered_map<uint32_t, Idmcfs_task*> m_task_lookup;
+
+    // **【修改】** 增加任务调度计数器，用于稳定调优频率
+    std::unordered_map<uint32_t, int> m_dispatch_counts;
 
     uint64_t m_min_vruntime;
 };
