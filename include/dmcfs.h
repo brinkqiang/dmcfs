@@ -22,24 +22,37 @@
 #ifndef __DMCFS_H_INCLUDE__
 #define __DMCFS_H_INCLUDE__
 
-#include "dmos.h" // dmos.h已经处理平台头文件, 以及相关宏定义
-#include "dmfix_win_utf8.h" // 处理 win平台utf8问题
+#include "dmos.h"
 #include "dmmoduleptr.h"
+#include <string>
+#include <cstdint>
+#include <optional>
 
-class Idmcfs;
+class Idmcfs; 
+using dmcfsPtr = DmModulePtr<Idmcfs>;
 
-typedef DmModulePtr<Idmcfs> dmcfsPtr;
-
-class Idmcfs
-{
-public:
-    virtual ~Idmcfs(){}
-    virtual void DMAPI Release(void) = 0;
-	
-    virtual void DMAPI Test(void) = 0;
+// 任务结构体保持不变，因为它描述的是数据，而不是模块本身
+struct CfsTask {
+    uint32_t id;
+    std::string name;
+    int nice_value;
+    uint64_t vruntime;
+    uint32_t weight;
 };
 
-extern "C" DMEXPORT_DLL Idmcfs* DMAPI dmcfsGetModule();
+class Idmcfs {
+public:
+    virtual ~Idmcfs() {}
+    virtual void DMAPI Release(void) = 0;
 
+    virtual void DMAPI AddTask(uint32_t id, const std::string& name, int nice_value) = 0;
+    virtual std::optional<CfsTask> DMAPI PickNextTask() const = 0;
+    virtual bool DMAPI UpdateTaskRuntime(uint32_t task_id, uint64_t exec_time) = 0;
+    virtual void DMAPI RemoveTask(uint32_t task_id) = 0;
+};
+
+// 工厂函数也遵循您的风格
+extern "C" DMEXPORT_DLL Idmcfs* DMAPI dmcfsGetModule();
 typedef Idmcfs* (DMAPI* PFN_dmcfsGetModule)();
+
 #endif // __DMCFS_H_INCLUDE__

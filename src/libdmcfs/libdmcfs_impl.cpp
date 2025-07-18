@@ -19,32 +19,83 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "libdmcfs_impl.h"
-#include "dmformat.h"
+#include "libdmcfs_impl.h" // 包含对应的实现头文件
+#include <iostream>
+#include <algorithm>
 
-Cdmcfs_impl::Cdmcfs_impl()
-{
+// 实现的类名和方法需要全量更新
+DmcfsImpl::DmcfsImpl() : m_min_vruntime(0) {}
 
+DmcfsImpl::~DmcfsImpl() {
+    std::cout << "CFS implementation (DmcfsImpl) destroyed." << std::endl;
 }
 
-Cdmcfs_impl::~Cdmcfs_impl()
-{
-
-}
-
-void DMAPI Cdmcfs_impl::Release(void)
-{
+void DmcfsImpl::Release(void) {
     delete this;
 }
 
-void DMAPI Cdmcfs_impl::Test(void)
-{
-    fmt::print("{}\n", "PROJECT_NAME = dmcfs");
-    fmt::print("{}\n", "PROJECT_NAME_UP = DMCFS");
-    fmt::print("{}\n", "PROJECT_NAME_LO = dmcfs");
+uint32_t DmcfsImpl::get_weight(int nice_value) {
+    int index = std::clamp(nice_value + 20, 0, 39);
+    return sched_prio_to_weight[index];
 }
 
-Idmcfs* DMAPI dmcfsGetModule()
-{
-    return new Cdmcfs_impl();
+void DmcfsImpl::AddTask(uint32_t id, const std::string& name, int nice_value) {
+    if (m_task_lookup.count(id)) {
+        return;
+    }
+    CfsTask task;
+    task.id = id;
+    task.name = name;
+    task.nice_value = nice_value;
+    task.weight = get_weight(nice_value);
+    task.vruntime = m_min_vruntime;
+    VRuntimeKey key = {task.vruntime, task.id};
+    m_run_queue[key] = task;
+    m_task_lookup[id] = key;
+}
+
+std::optional<CfsTask> DmcfsImpl::PickNextTask() const {
+    if (m_run_queue.empty()) {
+        return std::nullopt;
+    }
+    return m_run_queue.begin()->second;
+}
+
+bool DmcfsImpl::UpdateTaskRuntime(uint32_t task_id, uint64_t exec_time) {
+    auto it = m_task_lookup.find(task_id);
+    if (it == m_task_lookup.end()) {
+        return false;
+    }
+    VRuntimeKey old_key = it->second;
+    CfsTask task = m_run_queue.at(old_key);
+    m_run_queue.erase(old_key);
+
+    uint64_t delta_vruntime = (exec_time * NICE_0_LOAD) / task.weight;
+    task.vruntime += delta_vruntime;
+
+    VRuntimeKey new_key = {task.vruntime, task.id};
+    m_run_queue[new_key] = task;
+    m_task_lookup[task_id] = new_key;
+
+    if (!m_run_queue.empty()) {
+        m_min_vruntime = m_run_queue.begin()->first.first;
+    }
+    return true;
+}
+
+void DmcfsImpl::RemoveTask(uint32_t task_id) {
+    auto it = m_task_lookup.find(task_id);
+    if (it != m_task_lookup.end()) {
+        VRuntimeKey key = it->second;
+        m_run_queue.erase(key);
+        m_task_lookup.erase(it);
+        if (!m_run_queue.empty()) {
+            m_min_vruntime = m_run_queue.begin()->first.first;
+        }
+    }
+}
+
+// 工厂函数实现
+extern "C" DMEXPORT_DLL Idmcfs* DMAPI dmcfsGetModule() {
+    return new DmcfsImpl();
 }
