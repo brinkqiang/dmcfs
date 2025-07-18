@@ -1,4 +1,3 @@
-
 // Copyright (c) 2018 brinkqiang (brink.qiang@gmail.com)
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -79,9 +78,19 @@ void DmcfsImpl::removeTask(uint32_t task_id) {
         Idmcfs_task* task = it_lookup->second;
         DmcfsSchedulingState& state = task->getSchedulingState();
         VRuntimeKey key = {state.vruntime, task->getId()};
+
+        bool is_min_task = false;
+        if (!m_run_queue.empty() && m_run_queue.begin()->second->getId() == task_id) {
+            is_min_task = true;
+        }
+
         m_run_queue.erase(key);
         m_task_lookup.erase(it_lookup);
-        if (!m_run_queue.empty()) {
+
+        if (m_run_queue.empty()) {
+            m_min_vruntime = 0;
+        }
+        else if (is_min_task) {
             m_min_vruntime = m_run_queue.begin()->second->getSchedulingState().vruntime;
         }
     }
