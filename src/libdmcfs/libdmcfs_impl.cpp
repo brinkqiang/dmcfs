@@ -19,80 +19,98 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "libdmcfs_impl.h" // 包含对应的实现头文件
+#include "libdmcfs_impl.h"
+#include "dmcfs_task.h"
 #include <iostream>
 #include <algorithm>
+#include <utility>
 
-// 实现的类名和方法需要全量更新
 DmcfsImpl::DmcfsImpl() : m_min_vruntime(0) {}
 
-DmcfsImpl::~DmcfsImpl() {
-    std::cout << "CFS implementation (DmcfsImpl) destroyed." << std::endl;
-}
+DmcfsImpl::~DmcfsImpl() {}
 
 void DmcfsImpl::Release(void) {
     delete this;
 }
 
 uint32_t DmcfsImpl::get_weight(int nice_value) {
+    // 将 nice 值从 [-20, 19] 映射到数组索引 [0, 39]
     int index = std::clamp(nice_value + 20, 0, 39);
     return sched_prio_to_weight[index];
 }
 
-void DmcfsImpl::AddTask(uint32_t id, const std::string& name, int nice_value) {
-    if (m_task_lookup.count(id)) {
+void DmcfsImpl::addTask(Idmcfs_task* task) {
+    if (!task || m_task_lookup.count(task->getId())) {
         return;
     }
-    CfsTask task;
-    task.id = id;
-    task.name = name;
-    task.nice_value = nice_value;
-    task.weight = get_weight(nice_value);
-    task.vruntime = m_min_vruntime;
-    VRuntimeKey key = {task.vruntime, task.id};
+
+    int nice_value = task->getNiceValue();
+    uint32_t weight = get_weight(nice_value);
+
+    DmcfsSchedulingState& state = task->getSchedulingState();
+    state.weight = weight;
+    state.vruntime = m_min_vruntime; // 新任务设置为当前最小vruntime
+
+    uint32_t task_id = task->getId();
+    VRuntimeKey key = {state.vruntime, task_id};
+
     m_run_queue[key] = task;
-    m_task_lookup[id] = key;
+    m_task_lookup[task_id] = task;
+
+    std::cout << "Scheduler: Task '" << task->getName() << "' (ID: " << task_id
+        << ", nice: " << nice_value << ") added." << std::endl;
 }
 
-std::optional<CfsTask> DmcfsImpl::PickNextTask() const {
-    if (m_run_queue.empty()) {
-        return std::nullopt;
-    }
-    return m_run_queue.begin()->second;
-}
+void DmcfsImpl::removeTask(uint32_t task_id) {
+    auto it_lookup = m_task_lookup.find(task_id);
+    if (it_lookup != m_task_lookup.end()) {
+        Idmcfs_task* task = it_lookup->second;
+        DmcfsSchedulingState& state = task->getSchedulingState();
 
-bool DmcfsImpl::UpdateTaskRuntime(uint32_t task_id, uint64_t exec_time) {
-    auto it = m_task_lookup.find(task_id);
-    if (it == m_task_lookup.end()) {
-        return false;
-    }
-    VRuntimeKey old_key = it->second;
-    CfsTask task = m_run_queue.at(old_key);
-    m_run_queue.erase(old_key);
+        VRuntimeKey key = {state.vruntime, task->getId()};
 
-    uint64_t delta_vruntime = (exec_time * NICE_0_LOAD) / task.weight;
-    task.vruntime += delta_vruntime;
-
-    VRuntimeKey new_key = {task.vruntime, task.id};
-    m_run_queue[new_key] = task;
-    m_task_lookup[task_id] = new_key;
-
-    if (!m_run_queue.empty()) {
-        m_min_vruntime = m_run_queue.begin()->first.first;
-    }
-    return true;
-}
-
-void DmcfsImpl::RemoveTask(uint32_t task_id) {
-    auto it = m_task_lookup.find(task_id);
-    if (it != m_task_lookup.end()) {
-        VRuntimeKey key = it->second;
         m_run_queue.erase(key);
-        m_task_lookup.erase(it);
+        m_task_lookup.erase(it_lookup);
+
+        std::cout << "Scheduler: Task '" << task->getName() << "' (ID: " << task_id << ") removed." << std::endl;
+
         if (!m_run_queue.empty()) {
-            m_min_vruntime = m_run_queue.begin()->first.first;
+            m_min_vruntime = m_run_queue.begin()->second->getSchedulingState().vruntime;
         }
     }
+}
+
+uint32_t DmcfsImpl::dispatch(uint64_t exec_slice_ms) {
+    if (m_run_queue.empty()) {
+        return 0; // 返回0表示没有任务被调度
+    }
+
+    // 1. 选择任务 (Pick)
+    auto it = m_run_queue.begin();
+    Idmcfs_task* task_to_run = it->second;
+
+    // 从队列中移除旧条目，因为vruntime即将改变
+    m_run_queue.erase(it);
+
+    // 2. 执行任务 (Run)
+    std::cout << "\nScheduler: Dispatching task '" << task_to_run->getName()
+        << "' (vruntime: " << task_to_run->getSchedulingState().vruntime << ")." << std::endl;
+
+    task_to_run->run();
+
+    // 3. 更新状态 (Update)
+    DmcfsSchedulingState& state = task_to_run->getSchedulingState();
+    uint64_t delta_vruntime = (exec_slice_ms * NICE_0_LOAD) / state.weight;
+    state.vruntime += delta_vruntime;
+
+    // 4. 重新插入队列
+    VRuntimeKey new_key = {state.vruntime, task_to_run->getId()};
+    m_run_queue[new_key] = task_to_run;
+
+    // 更新整个队列的最小 vruntime
+    m_min_vruntime = m_run_queue.begin()->second->getSchedulingState().vruntime;
+
+    return task_to_run->getId();
 }
 
 // 工厂函数实现

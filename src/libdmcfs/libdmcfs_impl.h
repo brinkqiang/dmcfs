@@ -22,42 +22,47 @@
 #ifndef __LIBDMCFS_IMPL_H_INCLUDE__
 #define __LIBDMCFS_IMPL_H_INCLUDE__
 
-#include "dmcfs.h" // 包含新的头文件
+#include "dmcfs.h"
 #include <map>
 #include <unordered_map>
 #include <vector>
 
-// 权重表和常量保持不变
+// 真实Linux内核中的权重表
 static const int sched_prio_to_weight[40] = {
- /* -20 */     88761,     71755,     56483,     45462,     36423,
- /* -15 */     29154,     23254,     18705,     14949,     11916,
- /* -10 */      9548,      7620,      6100,      4904,      3906,
- /* -5 */      3121,      2501,      1991,      1586,      1277,
- /* 0 */      1024,       820,       655,       526,       423,
- /* 5 */       335,       272,       215,       172,       137,
- /* 10 */       110,        87,        70,        56,        45,
- /* 15 */        36,        29,        23,        18,        15,
+    /* -20 */     88761,     71755,     56483,     45462,     36423,
+    /* -15 */     29154,     23254,     18705,     14949,     11916,
+    /* -10 */      9548,      7620,      6100,      4904,      3906,
+    /* -5 */      3121,      2501,      1991,      1586,      1277,
+    /* 0 */      1024,       820,       655,       526,       423,
+    /* 5 */       335,       272,       215,       172,       137,
+    /* 10 */       110,        87,        70,        56,        45,
+    /* 15 */        36,        29,        23,        18,        15,
 };
+
+// NICE_0_LOAD
 static const uint32_t NICE_0_LOAD = 1024;
 
-// 实现类的命名也相应修改
 class DmcfsImpl : public Idmcfs {
 public:
     DmcfsImpl();
     virtual ~DmcfsImpl() override;
 
+    // 实现 Idmcfs 接口
     virtual void DMAPI Release(void) override;
-    virtual void DMAPI AddTask(uint32_t id, const std::string& name, int nice_value) override;
-    virtual std::optional<CfsTask> DMAPI PickNextTask() const override;
-    virtual bool DMAPI UpdateTaskRuntime(uint32_t task_id, uint64_t exec_time) override;
-    virtual void DMAPI RemoveTask(uint32_t task_id) override;
+    virtual void DMAPI addTask(Idmcfs_task* task) override;
+    virtual void DMAPI removeTask(uint32_t task_id) override;
+    virtual uint32_t DMAPI dispatch(uint64_t exec_slice_ms) override;
 
 private:
     uint32_t get_weight(int nice_value);
-    
+
+    // 使用 vruntime 和 task_id 作为复合键来保证唯一性
     using VRuntimeKey = std::pair<uint64_t, uint32_t>;
-    std::map<VRuntimeKey, CfsTask> m_run_queue;
-    std::unordered_map<uint32_t, VRuntimeKey> m_task_lookup;
+    // 运行队列红黑树，存储指向任务的指针
+    std::map<VRuntimeKey, Idmcfs_task*> m_run_queue;
+    // 用于通过ID快速查找任务指针
+    std::unordered_map<uint32_t, Idmcfs_task*> m_task_lookup;
+
     uint64_t m_min_vruntime;
 };
 
