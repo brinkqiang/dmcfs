@@ -23,12 +23,13 @@
 #define __LIBDMCFS_IMPL_H_INCLUDE__
 
 #include "dmcfs.h"
+#include "dmcfs_task.h"
 #include <map>
 #include <unordered_map>
 #include <vector>
 
 // 真实Linux内核中的权重表
-static const int sched_prio_to_weight[40] = {
+static const uint32_t sched_prio_to_weight[40] = {
     /* -20 */     88761,     71755,     56483,     45462,     36423,
     /* -15 */     29154,     23254,     18705,     14949,     11916,
     /* -10 */      9548,      7620,      6100,      4904,      3906,
