@@ -74,35 +74,34 @@ void DmcfsImpl::addTask(Idmcfs_task* task) {
     uint32_t task_id = task->getId();
     VRuntimeKey key = {sched_state.vruntime, task_id};
 
-    m_run_queue[key] = task;
-    m_task_lookup[task_id] = task;
-    m_dispatch_counts[task_id] = 0; // **【修改】** 初始化计数器
+    m_run_queue.emplace(key, task);
+    m_task_lookup.emplace(task_id, task);
+    m_dispatch_counts.emplace(task_id, 0);
 }
 
 void DmcfsImpl::removeTask(uint32_t task_id) {
-    // **【修改】** 全面修正此函数逻辑
     auto it_lookup = m_task_lookup.find(task_id);
     if (it_lookup != m_task_lookup.end()) {
         Idmcfs_task* task = it_lookup->second;
         DmcfsSchedulingState& state = task->getSchedulingState();
         VRuntimeKey key = {state.vruntime, task->getId()};
 
-        bool is_min_task = false;
-        if (!m_run_queue.empty() && m_run_queue.begin()->second->getId() == task_id) {
-            is_min_task = true;
+        auto it_queue = m_run_queue.find(key);
+        if (it_queue != m_run_queue.end()) {
+            bool is_min_task = (it_queue == m_run_queue.begin());
+            
+            m_run_queue.erase(it_queue);
+            
+            if (m_run_queue.empty()) {
+                m_min_vruntime = 0; // 队列为空，vruntime归零
+            } else if (is_min_task) {
+                // 被移除的是最小任务，更新min_vruntime
+                m_min_vruntime = m_run_queue.begin()->first.first;
+            }
         }
 
-        m_run_queue.erase(key);
         m_task_lookup.erase(it_lookup);
-        m_dispatch_counts.erase(task_id); // 移除计数器
-
-        if (m_run_queue.empty()) {
-            m_min_vruntime = 0; // 队列为空，vruntime归零
-        }
-        else if (is_min_task) {
-            // 被移除的是最小任务，更新min_vruntime
-            m_min_vruntime = m_run_queue.begin()->second->getSchedulingState().vruntime;
-        }
+        m_dispatch_counts.erase(task_id);
     }
 }
 
@@ -117,7 +116,12 @@ uint32_t DmcfsImpl::dispatch(uint64_t base_slice_ms) {
 
     // 为异常安全，先保存原始状态
     DmcfsSchedulingState original_sched_state = task_to_run->getSchedulingState();
+
+#if __cplusplus >= 201703L
+    auto node = m_run_queue.extract(it);
+#else
     m_run_queue.erase(it);
+#endif
 
     try {
         DmcfsTuningState& tuning_state = task_to_run->getTuningState();
@@ -174,19 +178,28 @@ uint32_t DmcfsImpl::dispatch(uint64_t base_slice_ms) {
         sched_state.vruntime += delta_vruntime_scaled;
 
         VRuntimeKey new_key = {sched_state.vruntime, task_id};
-        m_run_queue[new_key] = task_to_run;
+#if __cplusplus >= 201703L
+        node.key() = new_key;
+        m_run_queue.insert(std::move(node));
+#else
+        m_run_queue.emplace(new_key, task_to_run);
+#endif
 
     }
     catch (const std::exception& e) {
-        // **【修改】** 增加异常安全处理
         std::cerr << RED << "错误: 任务 '" << task_to_run->getName() << "' 执行时抛出异常: " << e.what() << RESET << std::endl;
         VRuntimeKey original_key = {original_sched_state.vruntime, task_id};
-        m_run_queue[original_key] = task_to_run;
+#if __cplusplus >= 201703L
+        node.key() = original_key;
+        m_run_queue.insert(std::move(node));
+#else
+        m_run_queue.emplace(original_key, task_to_run);
+#endif
         std::cerr << YELLOW << "调度器: 任务 '" << task_to_run->getName() << "' 已被安全放回队列，不会丢失。" << RESET << std::endl;
     }
 
     if (!m_run_queue.empty()) {
-        m_min_vruntime = m_run_queue.begin()->second->getSchedulingState().vruntime;
+        m_min_vruntime = m_run_queue.begin()->first.first;
     }
     else {
         m_min_vruntime = 0; // 如果异常导致最后一个任务被移除，也应重置
